@@ -219,7 +219,14 @@ func convertColumns(columns []*parser.Column, primaryColumn string) (Primary, ma
 			}
 		}
 
-		dataType, err := converter.ConvertDataType(column.DataType.Type(), isDefaultNull)
+		dt := column.DataType.Type()
+		//check bool filed
+		if dt == parser.TinyInt && (strings.HasPrefix(column.Name, "is_") || strings.HasPrefix(column.Name, "has_")) {
+			dt = parser.Bool
+		}
+
+		dataType, err := converter.ConvertDataType(dt, isDefaultNull)
+
 		if err != nil {
 			return Primary{}, nil, err
 		}
