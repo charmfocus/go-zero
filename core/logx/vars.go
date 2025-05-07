@@ -58,7 +58,7 @@ const (
 	durationKey  = "duration"
 	levelKey     = "level"
 	spanKey      = "span"
-	timestampKey = "@timestamp"
+	timestampKey = "timestamp"
 	traceKey     = "trace"
 	truncatedKey = "truncated"
 )
