@@ -18,7 +18,7 @@ import (
 const callerDepth = 4
 
 var (
-	timeFormat        = "2006-01-02T15:04:05.000Z07:00"
+	timeFormat        = "2006-01-02 15:04:05.000Z07:00"
 	encoding   uint32 = jsonEncodingType
 	// maxContentLength is used to truncate the log content, 0 for not truncating.
 	maxContentLength uint32
