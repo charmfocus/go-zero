@@ -15,6 +15,7 @@ import (
 	"github.com/zeromicro/go-zero/rest/handler"
 	"github.com/zeromicro/go-zero/rest/httpx"
 	"github.com/zeromicro/go-zero/rest/internal"
+	"github.com/zeromicro/go-zero/rest/internal/header"
 	"github.com/zeromicro/go-zero/rest/internal/response"
 )
 
@@ -27,7 +28,10 @@ var ErrSignatureConfig = errors.New("bad config for Signature")
 type engine struct {
 	conf   RestConf
 	routes []featuredRoutes
-	// timeout is the max timeout of all routes
+	// timeout is the max timeout of all routes,
+	// and is used to set http.Server.ReadTimeout and http.Server.WriteTimeout.
+	// this network timeout is used to avoid DoS attacks by sending data slowly
+	// or receiving data slowly with many connections to exhaust server resources.
 	timeout              time.Duration
 	unauthorizedCallback handler.UnauthorizedCallback
 	unsignedCallback     handler.UnsignedCallback
@@ -54,13 +58,26 @@ func newEngine(c RestConf) *engine {
 }
 
 func (ng *engine) addRoutes(r featuredRoutes) {
+	if r.sse {
+		r.routes = buildSSERoutes(r.routes)
+	}
 	ng.routes = append(ng.routes, r)
 
-	// need to guarantee the timeout is the max of all routes
-	// otherwise impossible to set http.Server.ReadTimeout & WriteTimeout
-	if r.timeout > ng.timeout {
-		ng.timeout = r.timeout
+	ng.mightUpdateTimeout(r)
+}
+
+func buildSSERoutes(routes []Route) []Route {
+	for i, route := range routes {
+		h := route.Handler
+		routes[i].Handler = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(header.ContentType, header.ContentTypeEventStream)
+			w.Header().Set(header.CacheControl, header.CacheControlNoCache)
+			w.Header().Set(header.Connection, header.ConnectionKeepAlive)
+			h(w, r)
+		}
 	}
+
+	return routes
 }
 
 func (ng *engine) appendAuthHandler(fr featuredRoutes, chn chain.Chain,
@@ -174,11 +191,12 @@ func (ng *engine) checkedMaxBytes(bytes int64) int64 {
 	return ng.conf.MaxBytes
 }
 
-func (ng *engine) checkedTimeout(timeout time.Duration) time.Duration {
-	if timeout > 0 {
-		return timeout
+func (ng *engine) checkedTimeout(timeout *time.Duration) time.Duration {
+	if timeout != nil {
+		return *timeout
 	}
 
+	// if timeout not set in featured routes, use global timeout
 	return time.Duration(ng.conf.Timeout) * time.Millisecond
 }
 
@@ -208,6 +226,32 @@ func (ng *engine) getShedder(priority bool) load.Shedder {
 	}
 
 	return ng.shedder
+}
+
+func (ng *engine) hasTimeout() bool {
+	return ng.conf.Middlewares.Timeout && ng.timeout > 0
+}
+
+// mightUpdateTimeout checks if the route timeout is greater than the current,
+// and updates the engine's timeout accordingly.
+func (ng *engine) mightUpdateTimeout(r featuredRoutes) {
+	// if global timeout is set to 0, it means no need to set read/write timeout
+	// if route timeout is nil, no need to update ng.timeout
+	if ng.timeout == 0 || r.timeout == nil {
+		return
+	}
+
+	// if route timeout is 0 (means no timeout), cannot set read/write timeout
+	if *r.timeout == 0 {
+		ng.timeout = 0
+		return
+	}
+
+	// need to guarantee the timeout is the max of all routes
+	// otherwise impossible to set http.Server.ReadTimeout & WriteTimeout
+	if *r.timeout > ng.timeout {
+		ng.timeout = *r.timeout
+	}
 }
 
 // notFoundHandler returns a middleware that handles 404 not found requests.
@@ -311,7 +355,7 @@ func (ng *engine) start(router httpx.Router, opts ...StartOption) error {
 	}
 
 	// make sure user defined options overwrite default options
-	opts = append([]StartOption{ng.withTimeout()}, opts...)
+	opts = append([]StartOption{ng.withNetworkTimeout()}, opts...)
 
 	if len(ng.conf.CertFile) == 0 && len(ng.conf.KeyFile) == 0 {
 		return internal.StartHttp(ng.conf.Host, ng.conf.Port, router, opts...)
@@ -334,18 +378,19 @@ func (ng *engine) use(middleware Middleware) {
 	ng.middlewares = append(ng.middlewares, middleware)
 }
 
-func (ng *engine) withTimeout() internal.StartOption {
+func (ng *engine) withNetworkTimeout() internal.StartOption {
 	return func(svr *http.Server) {
-		timeout := ng.timeout
-		if timeout > 0 {
-			// factor 0.8, to avoid clients send longer content-length than the actual content,
-			// without this timeout setting, the server will time out and respond 503 Service Unavailable,
-			// which triggers the circuit breaker.
-			svr.ReadTimeout = 4 * timeout / 5
-			// factor 1.1, to avoid servers don't have enough time to write responses.
-			// setting the factor less than 1.0 may lead clients not receiving the responses.
-			svr.WriteTimeout = 11 * timeout / 10
+		if !ng.hasTimeout() {
+			return
 		}
+
+		// factor 0.8, to avoid clients send longer content-length than the actual content,
+		// without this timeout setting, the server will time out and respond 503 Service Unavailable,
+		// which triggers the circuit breaker.
+		svr.ReadTimeout = 4 * ng.timeout / 5
+		// factor 1.1, to avoid servers don't have enough time to write responses.
+		// setting the factor less than 1.0 may lead clients not receiving the responses.
+		svr.WriteTimeout = 11 * ng.timeout / 10
 	}
 }
 

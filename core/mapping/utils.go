@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,6 +90,15 @@ func ValidatePtr(v reflect.Value) error {
 	}
 
 	return nil
+}
+
+func convertToString(val any, fullName string) (string, error) {
+	v, ok := val.(string)
+	if !ok {
+		return "", fmt.Errorf("expect string for field %s, but got type %T", fullName, val)
+	}
+
+	return v, nil
 }
 
 func convertTypeFromString(kind reflect.Kind, str string) (any, error) {
@@ -634,11 +644,11 @@ func validateValueInOptions(val any, options []string) error {
 	if len(options) > 0 {
 		switch v := val.(type) {
 		case string:
-			if !stringx.Contains(options, v) {
+			if !slices.Contains(options, v) {
 				return fmt.Errorf(`error: value %q is not defined in options "%v"`, v, options)
 			}
 		default:
-			if !stringx.Contains(options, Repr(v)) {
+			if !slices.Contains(options, Repr(v)) {
 				return fmt.Errorf(`error: value "%v" is not defined in options "%v"`, val, options)
 			}
 		}
